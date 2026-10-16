@@ -353,16 +353,29 @@ def recent(agent_id, limit=RECENT_LIMIT):
         con.close()
 
 
+# How much earlier than its ledger write an inbound may count as having
+# arrived. It covers the processing lag between a message arriving and the model
+# logging it (59 s in the 2026-09-11 case), and nothing more.
+MAX_PROCESSING_LAG = 15 * 60
+
+
 def _arrival_epoch(ts, logged_at):
     """Unix epoch of an inbound's channel timestamp ("2026-09-11T08:40:21.000Z",
-    always UTC). Falls back to the ledger write time when ts is missing or does
-    not parse, and is capped at it: a message cannot arrive after it was logged,
-    so a skewed ts can never widen the answered-window past the old behaviour."""
+    always UTC), clamped into [logged_at - MAX_PROCESSING_LAG, logged_at].
+    Falls back to the ledger write time when ts is missing or does not parse.
+
+    Both bounds matter. A ts skewed into the FUTURE is cut at logged_at (a
+    message cannot arrive after it was logged), which is the old behaviour. A ts
+    skewed into the PAST would otherwise widen the answered-window by the whole
+    skew: an outbound sent a month before the inbound was logged would count as
+    answering it. The lower bound limits that widening to the processing lag."""
+    logged_at = int(logged_at)
     try:
         base = str(ts).strip().rstrip("Z").split(".")[0]
-        return min(calendar.timegm(time.strptime(base, "%Y-%m-%dT%H:%M:%S")), int(logged_at))
+        parsed = calendar.timegm(time.strptime(base, "%Y-%m-%dT%H:%M:%S"))
     except Exception:
         return logged_at
+    return max(min(parsed, logged_at), logged_at - MAX_PROCESSING_LAG)
 
 
 def source_for(agent_id, chat_id):
